@@ -103,6 +103,23 @@ def hmc_move(num_generator, position, step_size, num_steps, energy_fn):
 
     return final_pos, accept
 
+
+def hmc_updates(positions, step_size, avg_accept_rate, final_pos, accept,
+                target_accept_rate, step_size_inc, step_size_dec,
+                step_size_min, step_size_max, avg_accept_slowness):
+
+
+    # have accept matrix with same dimensions as final_pos
+    accept_matrix = accept.dimshuffle(0, *(('x',) * (final_pos.ndim - 1)))
+    new_positions = theano.tensor.switch(accept_matrix, final_pos, positions)
+
+    mean_dtype = theano.scalar.upcast(accept.dtype, avg_accept_rate.dtype)
+    new_accept_rate = theano.tensor.add(
+        avg_accept_slowness * avg_accept_rate,
+        (1.0 - avg_accept_slowness) * accept.mean(dtype=mean_dtype))
+
+    
+
 # theano random number generator
 num_generator = theano.tensor.shared_randomstreams.RandomStreams()
 
