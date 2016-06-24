@@ -76,12 +76,35 @@ def kinetic(mom):
     return 0.5 * (mom ** 2).sum(axis=1)
 
 
-def metropolis_hastings(energy_prev, energy_next):
+def metropolis_hastings_accept(num_generator, energy_prev, energy_next):
 
     energy_diff = energy_next - energy_prev
-    return 
+    dim = energy_prev.shape
+    return (theano.tensor.exp(energy_diff) - num_generator.uniform(dim)) >= 0
 
 
+def hmc_move(num_generator, position, step_size, num_steps, energy_fn):
+
+    # assume univariate Gaussian for momentum
+    pos_dim = position.shape
+    init_mom = num_generator.normal(pos_dim)
+
+    final_pos, final_mom = simulate(
+        position,
+        init_mom,
+        step_size,
+        num_steps,
+        energy_fn)
+
+    energy_prev = hamiltonian(position, init_mom, energy_fn)
+    energy_next = hamiltonian(final_pos, final_mom, energy_fn)
+
+    accept = metropolis_hastings_accept(num_generator, energy_prev, energy_next)
+
+    return final_pos, accept
+
+# theano random number generator
+num_generator = theano.tensor.shared_randomstreams.RandomStreams()
 
 #
 # def leapfrog(pos, mom, step_size, mass, energy_fn):
