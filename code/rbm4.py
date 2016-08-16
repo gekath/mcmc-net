@@ -1,5 +1,6 @@
 import numpy as np
 import time
+from hamiltonian import *
 
 class RBM():
     '''
@@ -89,6 +90,7 @@ class Trainer():
         '''
 
         # number of cases, dimension of data
+
         n_cases, n_dim = data.shape
         h_dim = self.model.n_hid
 
@@ -99,6 +101,10 @@ class Trainer():
             for offset in range(0, n_cases, batchsize):
 
                 batch = data[offset:offset+batchsize]
+                if batch.shape[0] != batchsize:
+                    print(batch.shape[0])
+                    print(batchsize)
+                    break
 
                 # Initialize hidden layer, given the current batch data
                 # Should be dimension n_cases x n_hid
@@ -107,7 +113,10 @@ class Trainer():
                 pre_hid_sum = np.sum(hid, axis=0)
                 pre_weight = np.dot(batch.T, hid)
 
+                # vis, hid = self.hamiltonian(hid, batch)
                 vis, hid = self.gibbs_sampler(cd_steps, hid)
+                # print(vis.shape)
+                # print(hid.shape)
 
                 # Update weights
                 diff_model_weights = (pre_weight - np.dot(vis.T, hid)) / batchsize
@@ -135,3 +144,29 @@ class Trainer():
                   (epoch + 1, time.clock() - epoch_start, rmse)
 
         return rmse, (self.model.weights, self.model.visbias, self.model.hidbias)
+
+
+    def gradient(self, vis, temp=1):
+        activation = np.dot(vis, self.model.weights) + self.model.hidbias
+        sigmoid = 1 / (1 + np.exp(- activation * temp))
+        final_gradient = np.dot(sigmoid.T, vis)
+
+        return final_gradient
+
+
+    def hamiltonian(self, hid, init_state, temp=1):
+        # hid = np.atleast_2d(hid)
+        # ncases = hid.shape[0]
+
+        new_vis, mom = run_hmc(self.free_energy, self.gradient, init_state, temp)
+        new_hid = self.update_hidden(new_vis)[1]
+
+        return new_vis, new_hid
+
+    def free_energy(self, vis, temp=1):
+        vis_term = np.dot(vis, self.model.visbias.T)
+        activation = np.dot(vis, self.model.weights) + self.model.hidbias
+        sigmoid = np.log(1 + np.exp(activation))
+        sum_sigmoid = np.sum(sigmoid, axis=1)
+        final_free_energy = - vis_term - sum_sigmoid
+        return np.sum(final_free_energy)

@@ -17,24 +17,6 @@ class TestMNIST():
         self.all_hid_bias = None
         self.trainer = None
 
-    def load_mnist(self, directory, class_num, set_type='train'):
-
-        # class_string = 'train%d' %(class_num) + '.txt'
-        class_string = directory + '/' + set_type + '%d.txt' % (class_num)
-        data = np.loadtxt(class_string) / 255
-
-        return data
-
-    def convert_to_text(self, filename):
-
-        data = sio.loadmat(filename)
-
-        for i in range(self.num_classes):
-            class_string = 'test%d' % (i)
-            print(class_string)
-            class_data = data[class_string]
-            np.savetxt(class_string + '.txt', class_data)
-
     def train_all(self, num_epochs, batchsize, sampler_type='Gibbs'):
 
         self.all_vis_bias = []
@@ -44,7 +26,7 @@ class TestMNIST():
         for class_num in range(self.num_classes):
 
             print('Beginning to load MNIST dataset ' + str(class_num))
-            data = self.load_mnist(self.directory, class_num)
+            data, n_cases = load_mnist(self.directory, class_num)
             print('Finished loading MNIST dataset ' + str(class_num))
 
             print('Initializing RBM' + str(class_num))
@@ -79,28 +61,27 @@ class TestMNIST():
         hid_bias = self.all_hid_bias[class_num]
         weights = self.all_weights[class_num]
 
-        print(vis_bias.shape)
-        print(hid_bias.shape)
-        return np.dot(vis, vis_bias.T) + np.dot(hid, hid_bias.T) + np.dot(np.dot(hid, weights.T), vis.T)
+        return - np.dot(vis, vis_bias.T) - np.dot(hid, hid_bias.T) - np.dot(np.dot(hid, weights.T), vis.T)
 
     def test_class(self, class_num):
 
-        log_prob_all = np.zeros(self.num_classes)
-
         print('Loading mnist test set for class %d' % class_num)
-        vis = self.load_mnist(self.directory, class_num, 'test')
+        vis, n_cases = load_mnist(self.directory, class_num, 'test')
         print('Building model for test class %d' % class_num)
         hid = self.trainer.update_hidden(vis)[1]
 
-        print(vis.shape)
+        log_prob_all = np.zeros((self.num_classes, n_cases))
+
         for class_num in range(self.num_classes):
 
             activation = self.energy_activation(vis, hid, class_num)
-            print(activation.shape)
-            log_prob = - np.sum(np.log(softmax(activation)))
+
+            log_prob = - np.sum(np.log(softmax(activation)), axis=1)
             log_prob_all[class_num] = log_prob
 
-        print(log_prob_all)
+        print(log_prob_all[:,0])
+        print(np.argmin(log_prob_all, axis=0))
+
 
 
 
@@ -109,12 +90,12 @@ if __name__ == "__main__":
 
     directory = '../data/mnist'
     num_classes = 10
-    num_epochs = 2
+    num_epochs = 5
     batchsize = 1000
     temps = np.arange(0.9, 1, 0.025)
     rmse_array = []
     filename = 'mnist_all.mat'
-    sampler_type = 'Gibbs'
+    sampler_type = 'hamiltonian'
 
     args = sys.argv[1:]
     if len(args) > 1:

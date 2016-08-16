@@ -127,7 +127,7 @@ def run_hmc(energy_function, gradient_function, init_state=[1], temp=1):
               }
     #TODO: Tune parameters
 
-    for n in range(100):
+    for n in range(5):
 
         # Last state stored in chain
         old_pos = chain[len(chain) - 1]
