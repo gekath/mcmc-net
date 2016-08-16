@@ -1,137 +1,216 @@
 import numpy as np
-import theano.tensor
+import random
+import math
+import copy
+import matplotlib.pyplot as plt
 
-class HMC():
-
-    def __init__(self, pos, mom, step_size, mass):
-
-        self.pos = pos
-        self.mom = mom
-        self.step = step_size
-        self.mass = mass
-
-        self.pos_dim = pos.shape
-        self.mom_dim = mom.shape
-
-        try:
-            assert self.pos_dim == self.mom_dim
-        except AssertionError:
-            print('Position and momentum vectors should have same dimension')
-
-
-def simulate(init_pos, init_mom, step_size, num_steps, energy_fn):
-
-    def leapfrog(leap_pos, leap_mom, step):
-
-        mass = 1  # assume for now
-
-        # calculate dU / d pos
-        pos_grad = theano.tensor.grad(energy_fn(leap_pos).sum(), leap_pos)
-
-        # calculate mom( t + step_size/2)
-        mom_half = leap_mom - (step / 2) * pos_grad
-
-        # calculate pos(t + step_size)
-        new_pos = leap_pos + (step / mass) * mom_half
-
-        return new_pos, mom_half
-
-    # Calc energy at initial position, and half step of momentum
-    # from init_pos i.e. pos(t_0)
-    init_energy = energy_fn(init_pos)
-    init_pos_grad = theano.tensor.grad(init_energy.sum(), init_pos)
-
-    # momentum half step at time: t + step_size//2
-    mom = init_mom - 0.5 * step_size * init_pos_grad
-
-    # calculate position at time: t + step_size
-    pos = init_pos + step_size * mom
-
-    i = 0
-    while i < num_steps:
-        pos, mom = leapfrog(pos, mom, step_size)
-
-    final_energy = energy_fn(pos)
-    final_pos = pos
-    final_pos_grad = theano.tensor.grad(final_energy.sum(), final_pos)
-
-    # Calculate final momentum
-    final_mom = mom - 0.5 * step_size * final_pos_grad
-
-    return final_pos, final_mom
-
-
-def hamiltonian(pos, mom, energy_fn):
-
-    return energy_fn(pos) + kinetic(mom)
-
-
-def kinetic(mom):
+def kinetic_energy(mom, mass=None):
     '''
-    Return kinetic energy (assume mass = 1)
-
-    :param mom A momentum vector
-
+    :param mom: Momentum vector of dimension d
+    :param mass: Matrix of dimension d x d (if None, mass is identity matrix)
+    :return: kinetic energy given momentum vector
+                Assume for now, mass = identity of dimension mom
     '''
-    return 0.5 * (mom ** 2).sum(axis=1)
+    return 0.5 * np.dot(mom.T, mom)
 
 
-def metropolis_hastings_accept(num_generator, energy_prev, energy_next):
+def potential_energy(pos, temp=1):
+    '''
+    :param pos: Momentum vector of dimension d
+    :return: Negative log probability given position vector
+    '''
+    # TODO: Calculate log likelihood function
 
-    energy_diff = energy_next - energy_prev
-    dim = energy_prev.shape
-    return (theano.tensor.exp(energy_diff) - num_generator.uniform(dim)) >= 0
+    # sampling from salpeter mass function
+    pos = pos[0]
+    c = (1.0 - pos)/(math.pow(M_max, 1.0-pos) - math.pow(M_min, 1.0-pos))
+    return - (N*math.log(c) - pos*D)
 
-
-def hmc_move(num_generator, position, step_size, num_steps, energy_fn):
-
-    # assume univariate Gaussian for momentum
-    pos_dim = position.shape
-    init_mom = num_generator.normal(pos_dim)
-
-    final_pos, final_mom = simulate(
-        position,
-        init_mom,
-        step_size,
-        num_steps,
-        energy_fn)
-
-    energy_prev = hamiltonian(position, init_mom, energy_fn)
-    energy_next = hamiltonian(final_pos, final_mom, energy_fn)
-
-    accept = metropolis_hastings_accept(num_generator, energy_prev, energy_next)
-
-    return final_pos, accept
+    # return 0.5 * np.dot(pos, pos)
 
 
-def hmc_updates(positions, step_size, avg_accept_rate, final_pos, accept,
-                target_accept_rate, step_size_inc, step_size_dec,
-                step_size_min, step_size_max, avg_accept_slowness):
+def calc_gradient(pos, temp=1):
+    # TODO: calculate gradient of log likelihood
+
+    # sampling from salpeter mass function
+    pos = pos[0]
+    grad = logMmin*math.pow(M_min, 1.0-pos) - logMmax*math.pow(M_max, 1.0-pos)
+    grad = 1.0 + grad*(1.0 - pos)/(math.pow(M_max, 1.0-pos)
+                                     -math.pow(M_min, 1.0-pos))
+    grad = -D - N*grad/(1.0 - pos)
+    return np.array(grad)
+
+    # return - np.array(pos)
 
 
-    # have accept matrix with same dimensions as final_pos
-    accept_matrix = accept.dimshuffle(0, *(('x',) * (final_pos.ndim - 1)))
-    new_positions = theano.tensor.switch(accept_matrix, final_pos, positions)
+def mom_update(pos, mom, step_size, gradient_function, temp):
+    grad = - gradient_function(pos, temp)
+    return mom - 0.5 * step_size * grad
 
-    mean_dtype = theano.scalar.upcast(accept.dtype, avg_accept_rate.dtype)
-    new_accept_rate = theano.tensor.add(
-        avg_accept_slowness * avg_accept_rate,
-        (1.0 - avg_accept_slowness) * accept.mean(dtype=mean_dtype))
 
-    
+def pos_update(pos, mom, step_size):
+    return pos + step_size * mom
 
-# theano random number generator
-num_generator = theano.tensor.shared_randomstreams.RandomStreams()
+
+def leapfrog_updates(pos, mom, step_size, gradient_function, temp=1):
+    '''
+    :param pos: Position vector
+    :param mom: Momentum vector
+    :param step_size:
+    :return: The new position and momentum vectors after one full step.
+                Assume mass is the identity matrix
+    '''
+
+    # momentum half-step
+    mom_half = mom_update(pos, mom, step_size, gradient_function, temp)
+
+    # position full step
+    pos_new = pos_update(pos, mom_half, step_size)
+
+    # momentum full step
+    mom_new = mom_update(pos_new, mom_half, step_size, gradient_function, temp)
+
+    return pos_new, mom_new
+
+
+def accept_state(energy_diff):
+    '''
+    :param energy_diff: Change in Hamiltonian energy
+    :return: True iff energy_diff < 0, or exp(energy_diff) greater than uniform random num
+    '''
+
+    if np.min(energy_diff) < 0.0:
+        return True
+    else:
+        u = random.uniform(0.0, 1.0)
+        return u < math.exp(-np.min(energy_diff))
 
 #
-# def leapfrog(pos, mom, step_size, mass, energy_fn):
+# def sampleFromSalpeter(N, alpha, M_min, M_max):
+#     # Convert limits from M to logM.
+#     log_M_Min = math.log(M_min)
+#     log_M_Max = math.log(M_max)
+#     # Since Salpeter SMF decays, maximum likelihood occurs at M_min
+#     maxlik = math.pow(M_min, 1.0 - alpha)
 #
-#     pos_grad = theano.tensor.grad(energy_fn(pos).sum(), pos)
-#
-#     mom_half = mom - (step_size / 2) * np.dot(pos_grad, pos)
-#     new_pos = pos + (step_size / mass) * mom_half
-#     new_mom = mom_half - (step_size / 2) * np.dot(pos_grad, new_pos)
-#
-#
-#     return new_pos, new_mom
+#     # Prepare array for output masses.
+#     Masses = []
+#     # Fill in array.
+#     while (len(Masses) < N):
+#         # Draw candidate from logM interval.
+#         logM = random.uniform(log_M_Min,log_M_Max)
+#         M    = math.exp(logM)
+#         # Compute likelihood of candidate from Salpeter SMF.
+#         likelihood = math.pow(M, 1.0 - alpha)
+#         # Accept randomly.
+#         u = random.uniform(0.0,maxlik)
+#         if (u < likelihood):
+#             Masses.append(M)
+#     return Masses
 
+
+def run_hmc(energy_function, gradient_function, init_state=[1], temp=1):
+
+    #tODO: TUne parameres
+
+    step_size = 0.000000047
+    accepted = 0.0
+    num_steps = 5
+    chain = [init_state]
+    mom_chain = [[0]]
+    dim = init_state.shape[1]
+    # dim = 1
+    params = {"num_steps": num_steps,
+              "step_size": step_size,
+              "accepted": accepted,
+              "init_state": init_state,
+              }
+    #TODO: Tune parameters
+
+    for n in range(100):
+
+        # Last state stored in chain
+        old_pos = chain[len(chain) - 1]
+        # Assume momentum is univariate Gaussian
+        mom = np.random.normal(0.0, 1.0, dim)
+        old_hamiltonian = kinetic_energy(mom) + energy_function(old_pos, temp)
+        old_grad = - gradient_function(old_pos, temp)
+
+        new_pos = copy.copy(old_pos)
+        # new_grad = copy.copy(old_grad)
+
+        for i in range(num_steps):
+            new_pos, mom = leapfrog_updates(new_pos, mom, step_size, gradient_function, temp)
+            # mom = mom - step_size*new_grad * 0.5
+            # new_pos = new_pos + step_size * mom
+            # new_grad = -calc_gradient(new_pos)
+            # mom = mom - step_size*new_grad * 0.5
+            chain.append(new_pos)
+            mom_chain.append(mom)
+
+        new_energy = energy_function(new_pos, temp)
+        new_hamiltonian = new_energy + kinetic_energy(mom)
+        energy_diff = new_hamiltonian - old_hamiltonian
+
+        if accept_state(energy_diff):
+            chain.append(new_pos)
+            mom_chain.append(mom)
+            accepted = accepted + 1.0
+        else:
+            chain.append(old_pos)
+            mom_chain.append(mom)
+
+    print("Acceptance rate = "+str(accepted/float(len(chain))))
+    # return np.array(chain), np.array(mom_chain)
+    # Confabulations accepted are the final state of the chain
+    return chain[-1], mom_chain[-1]
+
+# N = 1000000
+# alpha = 2.35
+# M_min = 1.0
+# M_max = 100.0
+# Masses = sampleFromSalpeter(N, alpha, M_min, M_max)
+# LogM = np.log(np.array(Masses))
+# D = np.mean(LogM) * N
+# logMmin = math.log(1.0)
+# logMmax = math.log(100.0)
+
+
+if __name__ == "__main__":
+
+    chain, mom_chain = run_hmc(potential_energy, calc_gradient, [3])
+
+    clean = []
+    clean_mom = []
+
+    # for i in range(len(chain)):
+    #     clean.append(chain[i][0])
+    #     clean_mom.append(mom_chain[i][0])
+
+    for n in range(len(chain) / 2, len(chain)):
+        if (n % 10 == 0):
+            clean.append(chain[n][0])
+            # clean_mom.append(mom_chain[n])
+
+    print(clean)
+    print(clean_mom)
+
+    print("Mean:" + str(np.mean(clean)))
+    print("Sigma:" + str(np.std(clean)))
+
+    plt.figure(1)
+    plt.hist(clean, 20, histtype='step', lw=3)
+    plt.xticks([2.346, 2.348, 2.35, 2.352, 2.354],
+               [2.346, 2.348, 2.35, 2.352, 2.354])
+    plt.xlim(2.345, 2.355)
+    plt.xlabel(r'$\alpha$', fontsize=24)
+    plt.ylabel(r'$\cal L($Data$;\alpha)$', fontsize=24)
+    plt.savefig('example-MCMC-results2.png')
+    plt.show()
+
+    # plt.figure(1)
+    # plt.plot(clean, clean_mom, 'ro')
+    # plt.xlabel('Position')
+    # plt.ylabel('Momentum')
+    # plt.savefig('example-mcmc-circle2.png')
+    # plt.show()
