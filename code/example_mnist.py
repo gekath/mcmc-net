@@ -1,14 +1,8 @@
 from rbm4 import *
+from utils import *
 import numpy as np
 import sys
 import scipy.io as sio
-
-
-def softmax(self, data):
-    '''
-    Helper function to calculate softmax given some input data.
-    '''
-    return np.exp(data) / np.sum(np.exp(data), axis=0)
 
 
 class TestMNIST():
@@ -21,7 +15,7 @@ class TestMNIST():
         self.all_weights = None
         self.all_vis_bias = None
         self.all_hid_bias = None
-        self.model = None
+        self.trainer = None
 
     def load_mnist(self, directory, class_num, set_type='train'):
 
@@ -54,13 +48,13 @@ class TestMNIST():
             print('Finished loading MNIST dataset ' + str(class_num))
 
             print('Initializing RBM' + str(class_num))
-            self.model = RBM(784, 1000)
+            model = RBM(784, 1000)
             # rbm.params[:] = np.random.uniform(-1./10, 1./10, len(rbm.params))
 
             print('Training RBM' + str(class_num))
-            trainer = Trainer(self.model)
+            self.trainer = Trainer(model)
 
-            rmse, params = trainer.train(data, num_epochs,
+            rmse, params = self.trainer.train(data, num_epochs,
                                          batchsize=batchsize,
                                          sampler=sampler_type)
             weights, vis_bias, hid_bias = params
@@ -72,11 +66,22 @@ class TestMNIST():
         # return np.array(self.all_weights), np.array(self.all_vis_bias), np.array(self.all_hid_bias)
 
     def energy_activation(self, vis, hid, class_num):
+        '''
+        hid_bias 1 x 1000
+        vis_bias 1 x 784
+
+        vis 980 x 784
+        hid 980 x 1000
+        weights 784 x 1000
+
+        '''
         vis_bias = self.all_vis_bias[class_num]
         hid_bias = self.all_hid_bias[class_num]
         weights = self.all_weights[class_num]
 
-        return np.dot(vis_bias.T, vis) + np.dot(hid_bias.T, hid) + vis * weights * hid
+        print(vis_bias.shape)
+        print(hid_bias.shape)
+        return np.dot(vis, vis_bias.T) + np.dot(hid, hid_bias.T) + np.dot(np.dot(hid, weights.T), vis.T)
 
     def test_class(self, class_num):
 
@@ -85,17 +90,18 @@ class TestMNIST():
         print('Loading mnist test set for class %d' % class_num)
         vis = self.load_mnist(self.directory, class_num, 'test')
         print('Building model for test class %d' % class_num)
-        hid = self.model.update_hidden(vis)[1]
+        hid = self.trainer.update_hidden(vis)[1]
 
         print(vis.shape)
         for class_num in range(self.num_classes):
 
             activation = self.energy_activation(vis, hid, class_num)
             print(activation.shape)
-            log_prob = - np.sum(np.log(self.softmax(activation)))
+            log_prob = - np.sum(np.log(softmax(activation)))
             log_prob_all[class_num] = log_prob
 
         print(log_prob_all)
+
 
 
 
@@ -103,7 +109,7 @@ if __name__ == "__main__":
 
     directory = '../data/mnist'
     num_classes = 10
-    num_epochs = 3
+    num_epochs = 2
     batchsize = 1000
     temps = np.arange(0.9, 1, 0.025)
     rmse_array = []
