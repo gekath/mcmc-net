@@ -4,73 +4,130 @@ import math
 import copy
 import matplotlib.pyplot as plt
 
-def kinetic_energy(mom, mass=None):
-    '''
-    :param mom: Momentum vector of dimension d
-    :param mass: Matrix of dimension d x d (if None, mass is identity matrix)
-    :return: kinetic energy given momentum vector
-                Assume for now, mass = identity of dimension mom
-    '''
-    return 0.5 * np.dot(mom.T, mom)
+class HMCSampler():
+
+    def __init__(self, params, energy_fn, grad_fn):
+
+        self.step_size = params['step_size']
+        self.num_steps = params['num_steps']
+        self.num_iters = params['num_iters']
+        self.step_size_adj = params['step_size_adj']
+
+        self.mass = params['mass']
+        self.temp = params['temp']
+
+        self.energy_fn = energy_fn
+        self.grad_fn = grad_fn
+
+    def kinetic_energy(self, mom):
+        '''
+        :param mom: Momentum vector of dimension d
+        :param mass: Matrix of dimension d x d (if None, mass is identity matrix)
+        :return: kinetic energy given momentum vector
+                    Assume for now, mass = identity of dimension mom
+        '''
+        return 0.5 * np.dot(mom.T, mom) / self.mass
+
+    def potential_energy(self, pos):
+        '''
+        :param pos: Momentum vector of dimension d
+        :return: Negative log probability given position vector
+        '''
+        # TODO: Calculate log likelihood function
+
+        # sampling from salpeter mass function
+        pos = pos[0]
+        c = (1.0 - pos)/(math.pow(M_max, 1.0-pos) - math.pow(M_min, 1.0-pos))
+        return - (N*math.log(c) - pos*D)
+
+    def calc_gradient(self, pos):
+        # TODO: calculate gradient of log likelihood
+
+        # sampling from salpeter mass function
+        pos = pos[0]
+        grad = logMmin*math.pow(M_min, 1.0-pos) - logMmax*math.pow(M_max, 1.0-pos)
+        grad = 1.0 + grad*(1.0 - pos)/(math.pow(M_max, 1.0-pos)
+                                         -math.pow(M_min, 1.0-pos))
+        grad = -D - N*grad/(1.0 - pos)
+        return np.array(grad)
+
+    def mom_update(self, pos, mom):
+        grad = - self.grad_fn(pos)
+        return mom - 0.5 * self.step_size * grad
 
 
-def potential_energy(pos, temp=1):
-    '''
-    :param pos: Momentum vector of dimension d
-    :return: Negative log probability given position vector
-    '''
-    # TODO: Calculate log likelihood function
-
-    # sampling from salpeter mass function
-    pos = pos[0]
-    c = (1.0 - pos)/(math.pow(M_max, 1.0-pos) - math.pow(M_min, 1.0-pos))
-    return - (N*math.log(c) - pos*D)
-
-    # return 0.5 * np.dot(pos, pos)
+    def pos_update(self, pos, mom):
+        return pos + self.step_size * mom
 
 
-def calc_gradient(pos, temp=1):
-    # TODO: calculate gradient of log likelihood
+    def leapfrog_updates(self, pos, mom):
+        '''
+        :param pos: Position vector
+        :param mom: Momentum vector
+        :param step_size:
+        :return: The new position and momentum vectors after one full step.
+                    Assume mass is the identity matrix
+        '''
 
-    # sampling from salpeter mass function
-    pos = pos[0]
-    grad = logMmin*math.pow(M_min, 1.0-pos) - logMmax*math.pow(M_max, 1.0-pos)
-    grad = 1.0 + grad*(1.0 - pos)/(math.pow(M_max, 1.0-pos)
-                                     -math.pow(M_min, 1.0-pos))
-    grad = -D - N*grad/(1.0 - pos)
-    return np.array(grad)
+        # momentum half-step
+        mom_half = self.mom_update(pos, mom)
 
-    # return - np.array(pos)
+        # position full step
+        pos_new = self.pos_update(pos, mom_half)
 
+        # momentum full step
+        mom_new = self.mom_update(pos_new, mom_half)
 
-def mom_update(pos, mom, step_size, gradient_function, temp):
-    grad = - gradient_function(pos, temp)
-    return mom - 0.5 * step_size * grad
+        return pos_new, mom_new
 
+    def hmc_move(self, init_state=[1]):
 
-def pos_update(pos, mom, step_size):
-    return pos + step_size * mom
+        accepted = 0.0
+        chain = [init_state]
+        mom_chain = [[0]]
+        dim = init_state.shape[1]
 
+        for iters in range(self.num_iters):
 
-def leapfrog_updates(pos, mom, step_size, gradient_function, temp=1):
-    '''
-    :param pos: Position vector
-    :param mom: Momentum vector
-    :param step_size:
-    :return: The new position and momentum vectors after one full step.
-                Assume mass is the identity matrix
-    '''
+            # Last state stored in chain
+            old_pos = chain[len(chain) - 1]
+            # Assume momentum is univariate Gaussian
+            mom = np.random.normal(0.0, 1.0, dim)
+            old_hamiltonian = self.kinetic_energy(mom) + self.energy_fn(old_pos)
+            old_grad = - self.grad_fn(old_pos)
 
-    # momentum half-step
-    mom_half = mom_update(pos, mom, step_size, gradient_function, temp)
+            new_pos = copy.copy(old_pos)
 
-    # position full step
-    pos_new = pos_update(pos, mom_half, step_size)
+            for i in range(self.num_steps):
+                new_pos, mom = self.leapfrog_updates(new_pos, mom)
 
-    # momentum full step
-    mom_new = mom_update(pos_new, mom_half, step_size, gradient_function, temp)
+            new_energy = self.energy_fn(new_pos)
+            new_hamiltonian = new_energy + self.kinetic_energy(mom)
+            energy_diff = new_hamiltonian - old_hamiltonian
 
-    return pos_new, mom_new
+            if accept_state(energy_diff):
+                chain.append(new_pos)
+                mom_chain.append(mom)
+                accepted = accepted + 1.0
+            else:
+                chain.append(old_pos)
+                mom_chain.append(mom)
+
+            acceptance_rate = accepted/float(len(chain))
+
+            # TODO: update step size dynamically to maintain certain acceptance
+            if acceptance_rate > 0.9:
+                self.step_size += 0.00001
+                print(self.step_size)
+            elif acceptance_rate < 0.6:
+                self.step_size -= 0.00001
+
+        # acceptance_rate = accepted / float(len(chain))
+
+        print("Acceptance rate = " + str(acceptance_rate))
+        # return np.array(chain), np.array(mom_chain)
+        # Confabulations accepted are the final state of the chain
+        return chain[-1]
 
 
 def accept_state(energy_diff):
@@ -84,96 +141,6 @@ def accept_state(energy_diff):
     else:
         u = random.uniform(0.0, 1.0)
         return u < math.exp(-np.min(energy_diff))
-
-#
-# def sampleFromSalpeter(N, alpha, M_min, M_max):
-#     # Convert limits from M to logM.
-#     log_M_Min = math.log(M_min)
-#     log_M_Max = math.log(M_max)
-#     # Since Salpeter SMF decays, maximum likelihood occurs at M_min
-#     maxlik = math.pow(M_min, 1.0 - alpha)
-#
-#     # Prepare array for output masses.
-#     Masses = []
-#     # Fill in array.
-#     while (len(Masses) < N):
-#         # Draw candidate from logM interval.
-#         logM = random.uniform(log_M_Min,log_M_Max)
-#         M    = math.exp(logM)
-#         # Compute likelihood of candidate from Salpeter SMF.
-#         likelihood = math.pow(M, 1.0 - alpha)
-#         # Accept randomly.
-#         u = random.uniform(0.0,maxlik)
-#         if (u < likelihood):
-#             Masses.append(M)
-#     return Masses
-
-
-def run_hmc(energy_function, gradient_function, init_state=[1], temp=1):
-
-    #tODO: TUne parameres
-
-    step_size = 0.000000047
-    accepted = 0.0
-    num_steps = 5
-    chain = [init_state]
-    mom_chain = [[0]]
-    dim = init_state.shape[1]
-    # dim = 1
-    params = {"num_steps": num_steps,
-              "step_size": step_size,
-              "accepted": accepted,
-              "init_state": init_state,
-              }
-    #TODO: Tune parameters
-
-    for n in range(5):
-
-        # Last state stored in chain
-        old_pos = chain[len(chain) - 1]
-        # Assume momentum is univariate Gaussian
-        mom = np.random.normal(0.0, 1.0, dim)
-        old_hamiltonian = kinetic_energy(mom) + energy_function(old_pos, temp)
-        old_grad = - gradient_function(old_pos, temp)
-
-        new_pos = copy.copy(old_pos)
-        # new_grad = copy.copy(old_grad)
-
-        for i in range(num_steps):
-            new_pos, mom = leapfrog_updates(new_pos, mom, step_size, gradient_function, temp)
-            # mom = mom - step_size*new_grad * 0.5
-            # new_pos = new_pos + step_size * mom
-            # new_grad = -calc_gradient(new_pos)
-            # mom = mom - step_size*new_grad * 0.5
-            chain.append(new_pos)
-            mom_chain.append(mom)
-
-        new_energy = energy_function(new_pos, temp)
-        new_hamiltonian = new_energy + kinetic_energy(mom)
-        energy_diff = new_hamiltonian - old_hamiltonian
-
-        if accept_state(energy_diff):
-            chain.append(new_pos)
-            mom_chain.append(mom)
-            accepted = accepted + 1.0
-        else:
-            chain.append(old_pos)
-            mom_chain.append(mom)
-
-    print("Acceptance rate = "+str(accepted/float(len(chain))))
-    # return np.array(chain), np.array(mom_chain)
-    # Confabulations accepted are the final state of the chain
-    return chain[-1], mom_chain[-1]
-
-# N = 1000000
-# alpha = 2.35
-# M_min = 1.0
-# M_max = 100.0
-# Masses = sampleFromSalpeter(N, alpha, M_min, M_max)
-# LogM = np.log(np.array(Masses))
-# D = np.mean(LogM) * N
-# logMmin = math.log(1.0)
-# logMmax = math.log(100.0)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 import numpy as np
 import time
 from hamiltonian import *
+import PIL.Image as Image
+from utils import *
 
 class RBM():
     '''
@@ -22,8 +24,37 @@ class RBM():
         # hid bias vector of dimension n_hid
         self.hidbias = np.zeros((1, n_hid))
 
-    # def energy_function(self, vis, hid):
-    #     return - np.dot(self.visbias, vis) - np.dot(self.hidbias, hid)
+    def update_hidden(self, vis):
+        '''
+        activation = W_i v + c_i
+        Return activation, and sigmoid(activation)
+        '''
+
+        prod_vis_weights = np.dot(vis, self.weights)
+        activation = prod_vis_weights + self.hidbias
+
+        return activation, 1 / ( 1 + np.exp( - activation))
+
+    def update_visible(self, hid):
+        '''
+        activation = h' W_j + v_j
+        Return activation, and sigmoid(activation)
+        '''
+
+        prod_hid_weights = np.dot(hid, self.weights.T)
+        activation = prod_hid_weights + self.visbias
+
+        return activation, 1 / (1 + np.exp( - activation))
+
+    def free_energy(self, vis):
+
+        vis_term = np.dot(vis, self.visbias.T)
+        activation = np.dot(vis, self.weights) + self.hidbias
+        sigmoid = np.log(1 + np.exp(activation))
+        sum_sigmoid = np.sum(sigmoid, axis=1)
+        final_free_energy = - vis_term - sum_sigmoid
+
+        return np.sum(final_free_energy)
 
 
 class Trainer():
@@ -37,6 +68,7 @@ class Trainer():
         self.model = model
         self.weight_cost = weight_cost
         self.vis_rate, self.hid_rate, self.weight_rate = rates
+        self.weight_step = np.zeros(model.weights.shape)
 
     def gibbs_sampler(self, num_steps, h0_sample):
         '''
@@ -49,41 +81,37 @@ class Trainer():
 
         return v1_sample, h1_sample
 
-    def update_hidden(self, vis):
-        '''
-        activation = W_i v + c_i
-        Return activation, and sigmoid(activation)
-        '''
+    # def sample_h_given_v(self, v0_sample):
+    #
+    #     h1_activation, h1_mean = self.model.update_hidden(v0_sample)
+    #     h1_sample = h1_activation
+    #     # h1_sample = np.random.binomial(1, h1_mean, h1_mean.shape)
+    #     return h1_activation, h1_mean, h1_sample
+    #
+    # def sample_v_given_h(self, h0_sample):
+    #
+    #     v1_activation, v1_mean = self.model.update_visible(h0_sample)
+    #     v1_sample = v1_activation
+    #     # v1_sample = np.random.binomial(1, v1_mean, v1_mean.shape)
+    #     return v1_activation, v1_mean, v1_sample
 
-        prod_vis_weights = np.dot(vis, self.model.weights)
-        activation = prod_vis_weights + self.model.hidbias
-        return activation, 1 / (1 + np.exp( - activation))
+    def sample(self, probs):
 
-    def update_visible(self, hid):
-        '''
-        activation = h' W_j + v_j
-        Return activation, and sigmoid(activation)
-        '''
+        samples = np.random.uniform(size=probs.shape)
+        probs[samples < probs] = 1.
+        np.floor(probs, probs)
 
-        prod_hid_weights = np.dot(hid, self.model.weights.T)
-        activation = prod_hid_weights + self.model.visbias
-        return activation, 1 / (1 + np.exp( - activation))
+    def sample_h_from_v(self, vis):
 
-    def sample_h_given_v(self, v0_sample):
+        h_dim = self.model.n_hid
+        batchsize, n_dim = vis.shape
 
-        h1_activation, h1_mean = self.update_hidden(v0_sample)
-        h1_sample = h1_activation
-        # h1_sample = np.random.binomial(1, h1_mean, h1_mean.shape)
-        return h1_activation, h1_mean, h1_sample
+        hid = self.model.update_hidden(vis)[1]
+        pos_state = hid > np.random.rand(batchsize, h_dim)
 
-    def sample_v_given_h(self, h0_sample):
+        return hid, pos_state
 
-        v1_activation, v1_mean = self.update_visible(h0_sample)
-        v1_sample = v1_activation
-        # v1_sample = np.random.binomial(1, v1_mean, v1_mean.shape)
-        return v1_activation, v1_mean, v1_sample
-
-    def train(self, data, num_epochs=50, batchsize=100, cd_steps=1, momentum=0.9, sampler='Gibbs'):
+    def train(self, data, num_epochs, hmc_params, batchsize=100, cd_steps=1, momentum=0.9):
         '''
         Train model given data using specified sampling method by updating
         weights for num_epochs number of epochs.
@@ -94,79 +122,106 @@ class Trainer():
         n_cases, n_dim = data.shape
         h_dim = self.model.n_hid
 
-        for epoch in range(num_epochs):
+        try:
 
-            epoch_start = time.clock()
+            for epoch in range(num_epochs):
 
-            for offset in range(0, n_cases, batchsize):
+                epoch_start = time.clock()
 
-                batch = data[offset:offset+batchsize]
-                if batch.shape[0] != batchsize:
-                    print(batch.shape[0])
-                    print(batchsize)
-                    break
+                for offset in range(0, n_cases, batchsize):
 
-                # Initialize hidden layer, given the current batch data
-                # Should be dimension n_cases x n_hid
-                hid = self.update_hidden(batch)[1]
+                    batch = data[offset:offset+batchsize]
+                    if batch.shape[0] != batchsize:
+                        break
 
-                pre_hid_sum = np.sum(hid, axis=0)
-                pre_weight = np.dot(batch.T, hid)
+                    batch = batch > np.random.rand(batchsize, n_dim)
+                    # print(batch[0])
+                    # print(batch.shape)
 
-                # vis, hid = self.hamiltonian(hid, batch)
-                vis, hid = self.gibbs_sampler(cd_steps, hid)
-                # print(vis.shape)
-                # print(hid.shape)
+                    # Initialize hidden layer, given the current batch data
+                    # Should be dimension n_cases x n_hid
+                    hid = self.model.update_hidden(batch)[1]
 
-                # Update weights
-                diff_model_weights = (pre_weight - np.dot(vis.T, hid)) / batchsize
-                weight_product = self.model.weights * self.weight_cost
-                weight_step = self.weight_rate * (diff_model_weights - weight_product)
-                weight_step = momentum * weight_step
-                self.model.weights += weight_step
+                    # Positive phase
+                    # hid, pos_states = self.sample_h_from_v(batch)
 
-                # Update vis bias
-                vis_step = np.sum(batch, axis=0) - np.sum(vis, axis=0)
-                vis_step = vis_step * self.vis_rate / batchsize
-                self.model.visbias += vis_step
+                    pre_weight = np.dot(batch.T, hid)
+                    pre_hid_sum = np.sum(hid, axis=0)
+                    pre_vis_sum = np.sum(batch, axis=0)
 
-                # Update hid bias
-                hid_step = pre_hid_sum - np.sum(hid, axis=0)
-                hid_step = hid_step * self.hid_rate / batchsize
-                self.model.hidbias += hid_step
+                    # vis, hid = self.hamiltonian(hid, batch)
+                    # vis, hid = self.gibbs_sampler(cd_steps, hid)
 
-                # Calculate MSE (not good measure for this case, though will
-                # give an approximate idea of correct direction of training)
-                mse = np.sum((vis - batch) ** 2) / n_cases
+                    pos_states = hid > np.random.rand(batchsize, h_dim)
+                    #
+                    # # Negative phase
+                    #
+                    # vis = self.model.update_visible(pos_states)[1]
+                    # vis = vis > np.random.rand(batchsize, n_dim)
+                    #
+                    # hid = self.model.update_hidden(vis)[1]
 
-            rmse = np.sqrt(mse)
-            print "Epoch %d: %f seconds, RMSE=%f" % \
-                  (epoch + 1, time.clock() - epoch_start, rmse)
+                    vis, hid = self.hamiltonian(pos_states, batch, hmc_params)
+                    hid = hid > np.random.rand(batchsize, h_dim)
 
-        return rmse, (self.model.weights, self.model.visbias, self.model.hidbias)
+                    post_weight = np.dot(vis.T, hid)
+                    post_hid_sum = np.sum(hid, axis=0)
+                    post_vis_sum = np.sum(vis, axis=0)
 
+                    # Update weights
+                    diff_model_weights = (pre_weight - post_weight) / batchsize
+                    weight_product = self.model.weights * self.weight_cost
+                    weight_step = self.weight_rate*(diff_model_weights - weight_product)
 
-    def gradient(self, vis, temp=1):
+                    self.weight_step = self.weight_step * momentum
+                    self.weight_step += weight_step
+                    self.model.weights += self.weight_step
+
+                    # Update vis bias
+                    vis_step = pre_vis_sum - post_vis_sum
+                    vis_step = vis_step * self.vis_rate / batchsize
+                    self.model.visbias += vis_step
+
+                    # Update hid bias
+                    hid_step = pre_hid_sum - post_hid_sum
+                    hid_step = hid_step * self.hid_rate / batchsize
+                    self.model.hidbias += hid_step
+
+                    # Calculate MSE (not good measure for this case, though will
+                    # give an approximate idea of correct direction of training)
+                    mse = np.sum((vis - batch) ** 2) / n_cases
+
+                rmse = np.sqrt(mse)
+                print "Epoch %d: %f seconds, RMSE=%f" % \
+                      (epoch + 1, time.clock() - epoch_start, rmse)
+                print('Constructing image')
+                image = Image.fromarray(tile_raster_images(X=self.model.weights.T,
+                                                           img_shape=(28, 28),
+                                                           tile_shape=(10, 10),
+                                                           tile_spacing=(1, 1)))
+                image.save('rbm_filter_epoch_%i.png' % epoch)
+                print('Finished constructing image')
+
+        except KeyboardInterrupt:
+            print('Keyboard Interrupt')
+
+        finally:
+            return (self.model.weights, self.model.visbias, self.model.hidbias)
+
+    def gradient(self, vis):
         activation = np.dot(vis, self.model.weights) + self.model.hidbias
-        sigmoid = 1 / (1 + np.exp(- activation * temp))
+        sigmoid = 1 / (1 + np.exp(- activation))
         final_gradient = np.dot(sigmoid.T, vis)
 
-        return final_gradient
+        return np.sum(final_gradient, axis=0)
 
 
-    def hamiltonian(self, hid, init_state, temp=1):
+    def hamiltonian(self, hid, init_state, params):
         # hid = np.atleast_2d(hid)
         # ncases = hid.shape[0]
 
-        new_vis, mom = run_hmc(self.free_energy, self.gradient, init_state, temp)
-        new_hid = self.update_hidden(new_vis)[1]
+        hmc = HMCSampler(params, self.model.free_energy, self.gradient)
+        new_vis = hmc.hmc_move(init_state)
+        new_hid = self.model.update_hidden(new_vis)[1]
 
         return new_vis, new_hid
-
-    def free_energy(self, vis, temp=1):
-        vis_term = np.dot(vis, self.model.visbias.T)
-        activation = np.dot(vis, self.model.weights) + self.model.hidbias
-        sigmoid = np.log(1 + np.exp(activation))
-        sum_sigmoid = np.sum(sigmoid, axis=1)
-        final_free_energy = - vis_term - sum_sigmoid
-        return np.sum(final_free_energy)
